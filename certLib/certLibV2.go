@@ -102,6 +102,8 @@ type CrObj struct {
     Locality string `yaml:"Locality"`
     Organisation string `yaml:"Organisation"`
     OrganisationUnit string `yaml:"OrganisationUnit"`
+	token string
+	tokURI string
 }
 
 
@@ -319,6 +321,53 @@ func (certobj *CertObj) GetCfZoneList(ctx context.Context) (zones []cloudflare.Z
 
     return zones, nil
 }
+
+func (certobj *CertObj) SubmitChallenge(crList []CrObj, ctx context.Context) (err error) {
+
+	client := certobj.Client
+
+	chalVal := acme.Challenge{
+		Type: "dns-01",
+//		URI: dom.TokUrl,
+//		Token: dom.Token,
+		Status: "pending",
+	}
+
+
+	for i:=0; i< len(crList); i++ {
+
+		domain := crList[i].Zone
+		chalVal.URI = crList[i].tokURI
+		chalVal.Token = crList[i].token
+
+        chal, err := client.Accept(ctx, &chalVal)
+        if err != nil {return fmt.Errorf("dns-01 chal not accepted for %s: %v", domain, err)}
+        if certobj.Dbg {PrintChallenge(chal, domain)}
+	}
+
+	return nil
+}
+
+func (certobj *CertObj) GetOrder(ordUrl string, ctx context.Context)(err error) {
+
+	client := certobj.Client
+
+    tmpord, err := client.GetOrder(ctx, ordUrl)
+    if err !=nil {return fmt.Errorf("order error: %v\n", err)}
+    if certobj.Dbg {PrintOrder(*tmpord)}
+
+//    log.Printf("waiting for order\n")
+    if certobj.Dbg {log.Printf("debug -- order url: %s\n", ordUrl)}
+
+    ordUrl2, err := client.WaitOrder(ctx, ordUrl)
+    if err != nil {
+        if ordUrl2 != nil {PrintOrder(*ordUrl2)}
+        return fmt.Errorf("client.WaitOrder: %v\n",err)
+    }
+
+	return nil
+}
+
 
 func (certobj *CertObj) CleanZonesFromDNSChalRecords(crList []CrObj, ctx context.Context) (err error) {
 
@@ -1057,7 +1106,7 @@ func (certobj *CertObj) GetAuthOrder(CrList []CrObj, ctx context.Context) (newOr
 	return order, nil
 }
 
-func (certobj *CertObj) GetAuthAndToken (CrList []CrObj, order *acme.Order, ctx context.Context) (err error) {
+func (certobj *CertObj) GetAuthAndToken (CrList []CrObj, order *acme.Order, ctx context.Context) (crList []CrObj, err error) {
 
     numAcmeDom := len(CrList)
 
@@ -1085,7 +1134,7 @@ func (certobj *CertObj) GetAuthAndToken (CrList []CrObj, order *acme.Order, ctx 
         url := order.AuthzURLs[i]
 		domain :=  CrList[i].Zone
         auth, err := client.GetAuthorization(ctx, url)
-        if err != nil {return fmt.Errorf("client.GetAuthorisation: %v\n",err)}
+        if err != nil {return CrList, fmt.Errorf("client.GetAuthorisation: %v\n",err)}
 
         if certobj.Dbg {
 			log.Printf("success getting authorization for domain: %s\n", domain)
@@ -1101,7 +1150,10 @@ func (certobj *CertObj) GetAuthAndToken (CrList []CrObj, order *acme.Order, ctx 
             }
         }
 
-        if chal == nil {return fmt.Errorf("dns-01 challenge is not available for zone %s", domain)}
+		CrList[i].token = chal.Token
+		CrList[i].tokURI = chal.URI
+
+        if chal == nil {return CrList, fmt.Errorf("dns-01 challenge is not available for zone %s", domain)}
 
 		if certobj.Dbg {
 			log.Printf("success obtaining challenge\n")
@@ -1110,7 +1162,7 @@ func (certobj *CertObj) GetAuthAndToken (CrList []CrObj, order *acme.Order, ctx 
 
         // Fulfill the challenge.
         tokVal, err := client.DNS01ChallengeRecord(chal.Token)
-        if err != nil {return fmt.Errorf("dns-01 token for %s: %v", domain, err)}
+        if err != nil {return CrList, fmt.Errorf("dns-01 token for %s: %v", domain, err)}
         if certobj.Dbg {log.Printf("success obtaining Dns token value: %s\n", tokVal)}
 
 		log.Printf("Chal token: %s\n", tokVal)
@@ -1126,11 +1178,11 @@ func (certobj *CertObj) GetAuthAndToken (CrList []CrObj, order *acme.Order, ctx 
 		param.Content = tokVal
 
 		dnsRec, err := api.CreateDNSRecord(ctx, &rc, param)
-		if err != nil {return fmt.Errorf("CreateDnsREc: %v", err)}
+		if err != nil {return CrList, fmt.Errorf("CreateDnsREc: %v", err)}
 
 		log.Printf("DnsRec: %v\n", dnsRec)
 	}
-	return nil
+	return CrList, nil
 }
 
 func CheckDnsProbagation(CrList []CrObj) (err error) {
