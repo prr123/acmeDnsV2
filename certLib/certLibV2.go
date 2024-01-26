@@ -16,6 +16,7 @@ import (
     "time"
     "context"
 	"strings"
+	"net"
     "crypto/ecdsa"
     "crypto/elliptic"
     "crypto/rand"
@@ -25,8 +26,9 @@ import (
     "encoding/pem"
 
    "golang.org/x/crypto/acme"
-
+    "github.com/cloudflare/cloudflare-go"
     yaml "github.com/goccy/go-yaml"
+    json "github.com/goccy/go-json"
 )
 
 const LEProdUrl = "https://acme-v02.api.letsencrypt.org/directory"
@@ -45,9 +47,9 @@ type LEObj struct {
 	Updated time.Time `yaml:"update"`
 	Contacts []string `yaml:"contacts"`
 //	Remove bool `yaml:"remove"`
-	Type string `yaml:"type:"`
+	Type string `yaml:"AcntType:"`
 //	TestUrl string `yaml:"TestUrl"`
-	LEUrl string `yaml:"ProdUrl"`
+	LEUrl string `yaml:"LEUrl"`
 }
 
 type CsrList struct {
@@ -81,9 +83,8 @@ type CertList struct {
 	Expire time.Time	`yaml:"expire"`
 }
 
-
 type pkixName struct {
-    CommonName string `yaml:"CommonName"`
+    CommonName string `yaml:"Domain"`
     Country string `yaml:"Country"`
     Province string `yaml:"Province"`
     Locality string `yaml:"Locality"`
@@ -91,14 +92,33 @@ type pkixName struct {
     OrganisationUnit string `yaml:"OrganisationUnit"`
 }
 
-type certLibObj struct {
+type CrObj struct {
+    Zone string `yaml:"Domain"`
+	ZoneId string
+	Email string `yaml:"Email"`
+	Start time.Time `yaml:"Start"`
+    Country string `yaml:"Country"`
+    Province string `yaml:"Province"`
+    Locality string `yaml:"Locality"`
+    Organisation string `yaml:"Organisation"`
+    OrganisationUnit string `yaml:"OrganisationUnit"`
+}
+
+
+type CertObj struct {
 	ZoneDir string
 	CertDir string
 	LeDir string
 	CfDir string
 	CsrDir string
-	CfApiFilnam string
+	CfToken string
 	ZoneFilnam string
+	AcntFilnam string
+	Dbg	bool
+	Prod bool
+	Client *acme.Client
+	LEAccount *acme.Account
+	api *cloudflare.API
 }
 
 
@@ -161,56 +181,186 @@ type JsAcnt struct {
 }
 
 
-func InitCertLib()(certobj *certLibObj, err error) {
+func InitCertLib(dbg, prod bool)(certobj *CertObj, err error) {
 
-	certObj:=certLibObj {}
-    zoneDir := os.Getenv("zoneDir")
-    if len(zoneDir) == 0 {return nil, fmt.Errorf("could not resolve env var zoneDir!")}
-	certObj.ZoneDir = zoneDir
-	certObj.ZoneFilnam = zoneDir + "/cfDomainsShort.yaml"
+	certObj := CertObj{}
+	certObj.Dbg = dbg
+	certObj.Prod = prod
 
-    leAcnt := os.Getenv("LEAcnt")
-    if len(leAcnt) < 1 {return nil, fmt.Errorf("could not resolve env var LEAcnt!")}
-	certObj.LeDir = leAcnt + "/account"
+    leDir := os.Getenv("LEDir")
+    if len(leDir) < 1 {return nil, fmt.Errorf("could not resolve env var LEDir!")}
+	certObj.LeDir = leDir
 //    csrFilnam := leAcnt + "csrList/csrTest.yaml"
-	certObj.CertDir = leAcnt + "/certs"
+	certObj.CertDir = leDir + "/certs"
 
-    cfDir := os.Getenv("Cloudflare")
+    cfDir := os.Getenv("cfDir")
     if len(cfDir) == 0 {return nil, fmt.Errorf("could not resolve env var cfDir!")}
 	certObj.CfDir = cfDir
-//    certObj.CfApiFilnam = cfDir + "/token/cfDns.yaml"
-    certObj.CfApiFilnam = "cfDns.yaml"
+    certObj.CfToken = cfDir + "/token/DnsWrite.json"
 
-	certObj.CsrDir = leAcnt+ "/csrList/"
+	certObj.ZoneDir = cfDir + "/zones"
+
+	certObj.CsrDir = leDir + "/csrList/"
+
+	// get cloudflare DnsWrite Token
+    rdTokFilnam := cfDir + "/token/DnsWrite.json"
+
+    bdat, err := os.ReadFile(rdTokFilnam)
+    if err != nil {return nil, fmt.Errorf("cannot read token file: %v\n", err)}
+
+    ZoneTok := cloudflare.APIToken {}
+    err = json.Unmarshal(bdat, &ZoneTok)
+    if err != nil {return nil, fmt.Errorf("cannot unmarshal token file: %v\n", err)}
+
+	// get cloudflare api
+    api, err := cloudflare.NewWithAPIToken(ZoneTok.Value)
+	if err != nil {return nil, fmt.Errorf("getting cf api obj: %v",err)}
+	certObj.api = api
 
 	return &certObj, nil
 }
 
 
-/*
-func GetCertDir(acntNam string)(certDir string, err error) {
+func ReadCrFile(filnam string)(Cr []CrObj, err error) {
 
-    leAcnt := os.Getenv("LEAcnt")
-    if len(leAcnt) < 1 {return "", fmt.Errorf("could not resolve env var LEAcnt!")}
-	certDir = leAcnt + "/account"
+    crdat, err := os.ReadFile(filnam)
+    if err != nil {return Cr, fmt.Errorf("read cr file: %v\n", err)}
+//    fmt.Printf("crdat: %s\n", crdat)
 
-    // This returns an *os.FileInfo type
-    fileInfo, err := os.Stat(certDir)
-    if err != nil {
-		return "", fmt.Errorf("dir %s not found: %v\n", certDir, err)
-    }
+	err = yaml.Unmarshal(crdat, &Cr)
+	if err != nil {return Cr, fmt.Errorf("CR Unmarshal: %v", err)}
 
-    // IsDir is short for fileInfo.Mode().IsDir()
-    if !fileInfo.IsDir() {
-		return "", fmt.Errorf("%s not a directory!\n", certDir)
-    }
+	noTime, _ := time.Parse(time.RFC822, "01 Jan 0001 00:00:00 UTC")
 
-	byt := []byte(certDir)
-	if byt[len(byt)-1] != '/' {certDir += "/"}
+	for i:=0; i< len(Cr); i++ {
+//	fmt.Printf("no time: %s\n", noTime.Format(time.RFC1123))
+		if Cr[i].Start.Sub(noTime) == 0  {Cr[i].Start = time.Now()}
+	}
 
-	return certDir, nil
+	return Cr, nil
 }
-*/
+
+
+func IsInZones(zones []cloudflare.Zone, CrList []CrObj) (NCrList[]CrObj, err error) {
+
+	log.Printf("info -- zones: %d\n", len(zones))
+	log.Printf("info -- CRList: %d\n", len(CrList))
+
+	match := false
+	for i:=0; i< len(CrList); i++ {
+		tgtZone := CrList[i]
+		fmt.Printf(" %d: %s\n", i+1, tgtZone.Zone)
+		idx := -1
+		for j:=0; j< len(zones); j++ {
+			if zones[j].Name == tgtZone.Zone {
+				CrList[i].ZoneId = zones[j].ID
+				match = true
+				idx = j
+				break
+			}
+		}
+		if idx == -1 { return CrList, fmt.Errorf("no match for zone: %s", tgtZone.Zone)}
+	}
+
+	if !match {return CrList, fmt.Errorf("no match found!")}
+	return CrList, nil
+}
+
+//uuu
+
+func (certobj *CertObj)CheckZonesForDNSChalRecords(crList []CrObj, ctx context.Context) (err error) {
+
+	api := certobj.api
+
+    rc := cloudflare.ResourceContainer{
+        Level: cloudflare.ZoneRouteLevel,
+//        Identifier: zoneId,
+    }
+
+    DnsPar:=cloudflare.ListDNSRecordsParams{
+		Type: "TXT",
+	}
+
+	for i:=0; i< len(crList); i++ {
+		acmeDomain := "_acme-challenge." + crList[i].Zone
+		if len(crList[i].ZoneId) == 0 {return fmt.Errorf("Zone[%d] %s has no Id!\n", i+1, crList[i].Zone)}
+
+		rc.Identifier = crList[i].ZoneId
+		DnsPar.Name = acmeDomain
+
+		// check cloudflare name servers
+		DnsRecList, _, err := api.ListDNSRecords(ctx, &rc, DnsPar)
+		if err != nil { return fmt.Errorf("Zone[%d] %s ListDnsRec: %v!\n", i+1, crList[i].Zone, err)}
+		if len(DnsRecList) > 0 {return fmt.Errorf("Zone[%d] %s found challenge record!\n", i+1, crList[i].Zone)}
+
+		// for probgated records
+		_, err = net.LookupTXT(acmeDomain)
+		if err != nil {
+            errStr := err.Error()
+//			fmt.Printf("lookup: %s\n", errStr)
+            idx := strings.Index(errStr, "no such host")
+//			fmt.Printf("idx: %d\n", idx)
+			if idx == -1 {
+				return fmt.Errorf("Lookup Zone %s: %v", crList[i].Zone, err)
+            }
+		}
+	}
+
+	return nil
+}
+
+
+func (certobj *CertObj) GetCfZoneList(ctx context.Context) (zones []cloudflare.Zone,err error){
+
+	api := certobj.api
+
+	zones, err = api.ListZones(ctx)
+    if err != nil {return zones, fmt.Errorf("error -- cannot get zones: %v\n", err)}
+
+    return zones, nil
+}
+
+func (certobj *CertObj) CleanZonesFromDNSChalRecords(crList []CrObj, ctx context.Context) (err error) {
+
+	api := certobj.api
+
+    rc := cloudflare.ResourceContainer{
+        Level: cloudflare.ZoneRouteLevel,
+//        Identifier: zoneId,
+    }
+
+    DnsPar:=cloudflare.ListDNSRecordsParams{
+		Type: "TXT",
+	}
+
+	for i:=0; i< len(crList); i++ {
+
+		acmeDomain := "_acme-challenge." + crList[i].Zone
+		if len(crList[i].ZoneId) == 0 {return fmt.Errorf("Zone[%d] %s has no Id!\n", i+1, crList[i].Zone)}
+
+		rc.Identifier = crList[i].ZoneId
+		DnsPar.Name = acmeDomain
+
+		// check cloudflare name servers
+		DnsRecList, _, err := api.ListDNSRecords(ctx, &rc, DnsPar)
+		if err != nil { return fmt.Errorf("Zone[%d] %s ListDnsRec: %v!\n", i+1, crList[i].Zone, err)}
+//		if len(DnsRecList) > 0 {return fmt.Errorf("Zone[%d] %s found challenge record!\n", i+1, crList[i].Zone)}
+
+		// look for dns challenge records
+		if len(DnsRecList) > 0 {
+			for j:=0; j< len(DnsRecList); j++ {
+				recId := DnsRecList[j].ID
+				err = api.DeleteDNSRecord(ctx, &rc, recId)
+				if err != nil {return fmt.Errorf("DeleteDnsRec: %v", err)}
+				if certobj.Dbg {log.Printf("debug -- deleted Dns challenge record in zone: %s\n", crList[i].Zone)}
+			}
+		}
+
+	}
+
+	return nil
+}
+
 func GenCertKey()(certKey *ecdsa.PrivateKey,err error) {
 
     certKey, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -262,8 +412,10 @@ func WriteCsrFil(outFilnam string, csrDatList *CsrList) (err error) {
 	return nil
 }
 
+/*
+
 // function that creates a new client
-func CreateLEAccount(acntFilInfo string, prod bool) (err error) {
+func CreateLEAccount(acntNam string, prod bool) (err error) {
 
 	dbg := true
 
@@ -271,7 +423,7 @@ func CreateLEAccount(acntFilInfo string, prod bool) (err error) {
 	LEDir := os.Getenv("LEDir")
 	if len(LEDir) == 0 {return fmt.Errorf("LEDir not found!")}
 
-	acntFilInfoNam := LEDir + "/" + acntFilInfo + ".yaml"
+	acntFilInfoNam := LEDir + "/" + acntNam + "_info.yaml"
 	acntData, err := os.ReadFile(acntFilInfoNam)
 	if err != nil {return fmt.Errorf("Read acntinfo: %v!", err)}
 
@@ -290,7 +442,7 @@ func CreateLEAccount(acntFilInfo string, prod bool) (err error) {
     }
 
 	// check for existing keys and yaml file
-	acntNam := acntInfo.Name
+//	acntNam := acntInfo.Name
 	acntFilnam := ""
 	privKeyFilnam :=""
 	pubKeyFilnam := ""
@@ -398,19 +550,19 @@ func CreateLEAccount(acntFilInfo string, prod bool) (err error) {
 }
 
 
-func GetLEClient(acntNam string, dbg bool) (cl *acme.Client, err error) {
+func GetLEClient(LEacntNam string, dbg bool) (cl *acme.Client, err error) {
 
 	client :=acme.Client{}
 
 	LEDir := os.Getenv("LEDir")
 	if len(LEDir) == 0 {return nil, fmt.Errorf("cannot find LEDir!")}
 
-	acntFilnam := LEDir + "LEAcnt.yaml"
-	if len(acntNam) > 0 {
+	acntFilnam := LEDir + "/LEAccount.yaml"
+	if len(LEacntNam) > 0 {
 		acntFilnam = LEDir + acntNam + ".yaml"
-		log.Printf("account file: %s\n", acntFilnam)
+		log.Printf("info -- account file: %s\n", acntFilnam)
 	} else {
-		log.Printf("no account file provided using default!")
+		log.Printf("info -- no account file provided using default!")
 	}
 
 	acntData, err := os.ReadFile(acntFilnam)
@@ -475,6 +627,7 @@ func GetLEClient(acntNam string, dbg bool) (cl *acme.Client, err error) {
 
 
 // registers client with the acme server
+// GetAcmeClient performs this function
 func RegisterClient(ctx context.Context, client *acme.Client, contacts []string, dbg bool)(ac *acme.Account, err error) {
 
 	var acntTpl acme.Account
@@ -490,6 +643,7 @@ func RegisterClient(ctx context.Context, client *acme.Client, contacts []string,
 
     return acnt, nil
 }
+*/
 
 // generate cert names
 func GenerateCertName(domain string)(certName string, err error) {
@@ -770,14 +924,16 @@ func SaveAcmeClient(client *acme.Client, filNam string) (err error) {
     return nil
 }
 
+
+
 // function to retrieve keys for LetsEncrypt acme account
 func GetAcmeClient(acntFilnam string) (cl *acme.Client, err error) {
 
     var client acme.Client
 	dbg :=false
 
-	LEDir := os.Getenv("LEDir")
-	if len(LEDir) == 0 {return nil, fmt.Errorf("cannot find LEDir!")}
+//	LEDir := os.Getenv("LEDir")
+//	if len(LEDir) == 0 {return nil, fmt.Errorf("cannot find LEDir!")}
 
 	if len(acntFilnam) == 0 {
 		return nil, fmt.Errorf("no account name provided\n")
@@ -790,7 +946,7 @@ func GetAcmeClient(acntFilnam string) (cl *acme.Client, err error) {
     leAcnt := LEObj{}
 
     err = yaml.Unmarshal(acntData, &leAcnt)
-    if err != nil {log.Fatalf("yaml Unmarshal account file: %v\n", err)}
+    if err != nil {return nil, fmt.Errorf("yaml Unmarshal account file: %v\n", err)}
 
     if dbg {PrintLEAcnt(&leAcnt)}
 
@@ -815,8 +971,189 @@ func GetAcmeClient(acntFilnam string) (cl *acme.Client, err error) {
 
 	client.Key = privateKey
 	client.DirectoryURL = leAcnt.LEUrl
-//xxx
+
     return &client, nil
+}
+
+// methhod that creates LE client object and verifies LE account
+func (certobj *CertObj) GetAcmeClientV2(ctx context.Context) (err error) {
+
+    var client acme.Client
+	dbg :=false
+
+//	LEDir := os.Getenv("LEDir")
+//	if len(LEDir) == 0 {return nil, fmt.Errorf("cannot find LEDir!")}
+
+	acntFilnam := certobj.AcntFilnam
+	if len(acntFilnam) == 0 {
+		return fmt.Errorf("no account name provided\n")
+	}
+	if dbg {log.Printf("info -- account file: %s\n", acntFilnam)}
+
+    acntData, err := os.ReadFile(acntFilnam)
+    if err != nil {return fmt.Errorf("cannot read account file! %v", err)}
+
+    leAcnt := LEObj{}
+
+    err = yaml.Unmarshal(acntData, &leAcnt)
+    if err != nil {return fmt.Errorf("yaml Unmarshal account file: %v\n", err)}
+
+    if dbg {PrintLEAcnt(&leAcnt)}
+
+    pemEncoded, err := os.ReadFile(leAcnt.PrivKeyFilnam)
+    if err != nil {return fmt.Errorf("os.Read Priv Key: %v", err)}
+
+    pemEncodedPub, err := os.ReadFile(leAcnt.PubKeyFilnam)
+    if err != nil {return fmt.Errorf("os.Read Pub Key: %v", err)}
+
+    block, _ := pem.Decode([]byte(pemEncoded))
+    x509Encoded := block.Bytes
+    privateKey, err := x509.ParseECPrivateKey(x509Encoded)
+    if err != nil {return fmt.Errorf("x509.ParseECPivateKey: %v", err)}
+
+    blockPub, _ := pem.Decode([]byte(pemEncodedPub))
+    x509EncodedPub := blockPub.Bytes
+    genericPublicKey, err := x509.ParsePKIXPublicKey(x509EncodedPub)
+    if err != nil {return fmt.Errorf("x509.ParsePKIXKey: %v", err)}
+
+    publicKey := genericPublicKey.(*ecdsa.PublicKey)
+    privateKey.PublicKey = *publicKey
+
+	client.Key = privateKey
+	client.DirectoryURL = leAcnt.LEUrl
+
+//	ctx := context.Background()
+    acnt, err := client.GetReg(ctx, "")
+    if err != nil {return fmt.Errorf("error -- LE GetReg: %v\n", err)}
+
+	certobj.Client = &client
+	certobj.LEAccount = acnt
+    return nil
+}
+
+
+func (certobj *CertObj) GetAuthOrder(CrList []CrObj, ctx context.Context) (newOrder *acme.Order, err error) {
+
+    numAcmeDom := len(CrList)
+
+    authIdList := make([]acme.AuthzID, numAcmeDom)
+
+    // Authorize all domains provided in the cmd line args.
+    for i:=0; i< numAcmeDom; i++ {
+        authIdList[i].Type = "dns"
+        authIdList[i].Value = CrList[i].Zone
+    }
+
+    // lets encrypt does not accept preauthorisation
+    // var orderOpt acme.OrderOption
+    // OrderOption is contains optional parameters regarding timing
+
+	client := certobj.Client
+    order, err := client.AuthorizeOrder(ctx, authIdList)
+    if err != nil {return nil, fmt.Errorf("client.AuthorizeOrder: %v\n",err)}
+//    log.Printf("received Authorization Order!\n")
+//    if dbg {PrintOrder(*newOrder)}
+
+	return order, nil
+}
+
+func (certobj *CertObj) GetAuthAndToken (CrList []CrObj, order *acme.Order, ctx context.Context) (err error) {
+
+    numAcmeDom := len(CrList)
+
+	client := certobj.Client
+
+	api := certobj.api
+
+//	log.Printf("cf api: %v\n", api)
+    rc := cloudflare.ResourceContainer{
+        Level: cloudflare.ZoneRouteLevel,
+//        Identifier: param.ZoneID,
+    }
+
+    param := cloudflare.CreateDNSRecordParams{
+        CreatedOn: time.Now(),
+        Type: "TXT",
+//        Name: "_acme-challenge",
+//        Content: val,
+        TTL: 30000,
+        Comment: "acme challenge record",
+    }
+
+    for i:=0; i< numAcmeDom; i++ {
+
+        url := order.AuthzURLs[i]
+		domain :=  CrList[i].Zone
+        auth, err := client.GetAuthorization(ctx, url)
+        if err != nil {return fmt.Errorf("client.GetAuthorisation: %v\n",err)}
+
+        if certobj.Dbg {
+			log.Printf("success getting authorization for domain: %s\n", domain)
+			PrintAuth(auth)
+		}
+
+        // Pick the DNS challenge, if any.
+        var chal *acme.Challenge
+        for _, c := range auth.Challenges {
+            if c.Type == "dns-01" {
+                chal = c
+                break
+            }
+        }
+
+        if chal == nil {return fmt.Errorf("dns-01 challenge is not available for zone %s", domain)}
+
+		if certobj.Dbg {
+			log.Printf("success obtaining challenge\n")
+			PrintChallenge(chal, domain)
+		}
+
+        // Fulfill the challenge.
+        tokVal, err := client.DNS01ChallengeRecord(chal.Token)
+        if err != nil {return fmt.Errorf("dns-01 token for %s: %v", domain, err)}
+        if certobj.Dbg {log.Printf("success obtaining Dns token value: %s\n", tokVal)}
+
+		log.Printf("Chal token: %s\n", tokVal)
+
+		// check that there is no Dns Challenge rexcord
+		// if so, delete the record
+
+
+		// create DNS challenge record
+		rc.Identifier = CrList[i].ZoneId
+
+		param.Name = "_acme-challenge." + domain
+		param.Content = tokVal
+
+		dnsRec, err := api.CreateDNSRecord(ctx, &rc, param)
+		if err != nil {return fmt.Errorf("CreateDnsREc: %v", err)}
+
+		log.Printf("DnsRec: %v\n", dnsRec)
+	}
+	return nil
+}
+
+func CheckDnsProbagation(CrList []CrObj) (err error) {
+
+    numAcmeDom := len(CrList)
+
+    for i:=0; i< numAcmeDom; i++ {
+		tgtZone := CrList[i].Zone
+		acmeDomain := "_acme-challenge." + tgtZone
+//		txtRecs, err := net.LookupTXT(acmeDomain)
+		_, err := net.LookupTXT(acmeDomain)
+		if err != nil {
+			errStr := err.Error()
+			log.Printf("*** errStr: %s\n", errStr)
+			if idx := strings.Index(errStr, "127.0.0.53:53"); idx>1 {
+				return fmt.Errorf("domain %s acme dns rec not yet found!")
+			} else {
+				return fmt.Errorf("domain %s lookup error: %v", err)
+			}
+		}
+	}
+
+	return nil
 }
 
 func CleanCsrFil (csrFilnam string, csrList *CsrList) (err error) {
@@ -1359,16 +1696,63 @@ func PrintCsrReq(req *x509.CertificateRequest) {
 }
 
 
-func PrintCertObj(cert *certLibObj) {
+func PrintCertObj(cert *CertObj) {
 
 	fmt.Printf("**************** certLibObj *****************\n")
-	fmt.Printf("ZoneDir:     %s\n", cert.ZoneDir)
-	fmt.Printf("CertDir:     %s\n", cert.CertDir)
-	fmt.Printf("LE Dir:      %s\n", cert.LeDir)
-	fmt.Printf("CF Dir:      %s\n", cert.CfDir)
-	fmt.Printf("Csr Dir:    %s\n", cert.CsrDir)
-	fmt.Printf("Cf Api File: %s\n", cert.CfApiFilnam)
+	fmt.Printf("Account File: %s\n", cert.AcntFilnam)
+	fmt.Printf("ZoneDir:      %s\n", cert.ZoneDir)
+	fmt.Printf("CertDir:      %s\n", cert.CertDir)
+	fmt.Printf("LE Dir:       %s\n", cert.LeDir)
+	fmt.Printf("CF Dir:       %s\n", cert.CfDir)
+	fmt.Printf("Csr Dir:      %s\n", cert.CsrDir)
+	fmt.Printf("Cf Token:     %s\n", cert.CfToken)
+	fmt.Printf("Production:   %t\n", cert.Prod)
+	fmt.Printf("debug:        %t\n", cert.Dbg)
 	fmt.Printf("************** end certLibObj ***************\n")
 }
 
+func PrintCr( Cr CrObj) {
 
+    fmt.Printf("************** Cr file ****************\n")
+		fmt.Printf("Zone:         %s\n", Cr.Zone)
+    	fmt.Printf("Zone Id:      %s\n", Cr.ZoneId)
+    	fmt.Printf("Email:        %s\n", Cr.Email)
+    	fmt.Printf("Start:        %s\n", Cr.Start.Format(time.RFC1123))
+    	fmt.Printf("Country:      %s\n", Cr.Country)
+    	fmt.Printf("Province:     %s\n", Cr.Province)
+    	fmt.Printf("Locality:     %s\n", Cr.Locality)
+    	fmt.Printf("Organisation: %s\n", Cr.Organisation)
+    	fmt.Printf("OrganisationUnit: %s\n", Cr.OrganisationUnit)
+    fmt.Printf("*********** End Cr file ***************\n")
+}
+
+func PrintCrList(CrList []CrObj) {
+
+    fmt.Printf("************** Cr List %d ****************\n", len(CrList))
+
+	for i:=0; i< len(CrList); i++ {
+		Cr := CrList[i]
+    	fmt.Printf("************** Cr %d ****************\n", i+1)
+		fmt.Printf("Zone:         %s\n", Cr.Zone)
+    	fmt.Printf("Zone Id:      %s\n", Cr.ZoneId)
+    	fmt.Printf("Email:        %s\n", Cr.Email)
+    	fmt.Printf("Start:        %s\n", Cr.Start.Format(time.RFC1123))
+    	fmt.Printf("Country:      %s\n", Cr.Country)
+    	fmt.Printf("Province:     %s\n", Cr.Province)
+    	fmt.Printf("Locality:     %s\n", Cr.Locality)
+    	fmt.Printf("Organisation: %s\n", Cr.Organisation)
+    	fmt.Printf("OrganisationUnit: %s\n", Cr.OrganisationUnit)
+	}
+    fmt.Printf("************** End Cr List ****************\n")
+
+}
+
+func PrintZones(zones []cloudflare.Zone) {
+
+    fmt.Printf("************** Zones/Domains [%d] *************\n", len(zones))
+
+    for i:=0; i< len(zones); i++ {
+        zone := zones[i]
+        fmt.Printf("%d %-20s %s\n",i+1, zone.Name, zone.ID)
+    }
+}
