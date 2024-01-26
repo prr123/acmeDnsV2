@@ -18,3 +18,11 @@ The account file name is created form the account name "account" and "_prod.yaml
 usage: ./checkLEAccount /acnt=account /type=[prod|test] [/dbg]
 
 This program checks whether the account file points to a valid Let's Encrypt account.
+
+## createCerts
+usage: ./createCerts /cr=<crlist> /account=<account> /dbg
+program that creates a security certificate for https containg the zones (domains) listed in the cr file.
+
+## cleanZones
+usage: ./cleanZones /cr=<crlist> /account=<account> /dbg
+program that checks and removes Dns challenge records 
