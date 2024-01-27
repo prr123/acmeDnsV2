@@ -110,6 +110,9 @@ type CrObj struct {
 type CertObj struct {
 	ZoneDir string
 	CertDir string
+	CertName string
+	FinalUrl string
+	CertUrl string
 	LeDir string
 	CfDir string
 	CsrDir string
@@ -199,7 +202,6 @@ func InitCertLib(dbg, prod bool)(certobj *CertObj, err error) {
     if len(cfDir) == 0 {return nil, fmt.Errorf("could not resolve env var cfDir!")}
 	certObj.CfDir = cfDir
     certObj.CfToken = cfDir + "/token/DnsWrite.json"
-
 	certObj.ZoneDir = cfDir + "/zones"
 
 	certObj.CsrDir = leDir + "/csrList/"
@@ -348,23 +350,77 @@ func (certobj *CertObj) SubmitChallenge(crList []CrObj, ctx context.Context) (er
 	return nil
 }
 
-func (certobj *CertObj) GetOrder(ordUrl string, ctx context.Context)(err error) {
+func (certobj *CertObj) GetOrderAndWait(ordUrl string, ctx context.Context)(ordUrlNew *acme.Order, err error) {
 
 	client := certobj.Client
 
-    tmpord, err := client.GetOrder(ctx, ordUrl)
-    if err !=nil {return fmt.Errorf("order error: %v\n", err)}
-    if certobj.Dbg {PrintOrder(*tmpord)}
+   	tmpord, err := client.GetOrder(ctx, ordUrl)
+    if err !=nil {return nil, fmt.Errorf("order error: %v\n", err)}
+    if certobj.Dbg {PrintOrder(tmpord)}
 
-//    log.Printf("waiting for order\n")
-    if certobj.Dbg {log.Printf("debug -- order url: %s\n", ordUrl)}
-
-    ordUrl2, err := client.WaitOrder(ctx, ordUrl)
+    acmeOrder, err := client.WaitOrder(ctx, ordUrl)
     if err != nil {
-        if ordUrl2 != nil {PrintOrder(*ordUrl2)}
-        return fmt.Errorf("client.WaitOrder: %v\n",err)
+        if acmeOrder != nil {PrintOrder(acmeOrder)}
+        return acmeOrder, fmt.Errorf("client.WaitOrder: %v\n",err)
     }
 
+	return acmeOrder, nil
+}
+
+func (certobj *CertObj) CreateCerts(cr CrObj, ctx context.Context)(err error) {
+
+//certNam string, FinalUrl string 
+
+	client := certobj.Client
+
+    certKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+    if err != nil {return fmt.Errorf("ecdsa.GenerateKey: %v\n",err)}
+
+	keyFilnam := certobj.CertDir + "/" + certobj.CertName + ".key"
+    certFilnam := certobj.CertDir + "/" + certobj.CertName + ".crt"
+	if certobj.Dbg {log.Printf("debug --- key file: %s cert file: %s\n", keyFilnam, certFilnam)}
+
+    err = SaveKeyPem(certKey, keyFilnam)
+    if err != nil {return fmt.Errorf("error -- certLib.SaveKeypem: %v",err)}
+    if certobj.Dbg {log.Printf("debug -- key saved as PEM!\n")}
+
+	// need to create a csr template(certifcate signing request)
+    subj := pkix.Name{
+        CommonName:         cr.Zone,
+        Country:            []string{cr.Country},
+        Province:           []string{cr.Province},
+        Locality:           []string{cr.Locality},
+        Organization:       []string{cr.Organisation},
+        OrganizationalUnit: []string{"Admin"},
+    }
+
+    rawSubj := subj.ToRDNSequence()
+    asn1Subj, _ := asn1.Marshal(rawSubj)
+
+	csrTpl := x509.CertificateRequest{
+        RawSubject:         asn1Subj,
+        SignatureAlgorithm: x509.ECDSAWithSHA256,
+        DNSNames: []string{cr.Zone},
+    }
+
+	csr, err := x509.CreateCertificateRequest(rand.Reader, &csrTpl, certKey)
+	if err != nil {return fmt.Errorf("CreateCertReq: %v",err)}
+
+	certReq, err := x509.ParseCertificateRequest(csr)
+	if err != nil {return fmt.Errorf("ParseCertificateRequest: %v", err)}
+
+	err = certReq.CheckSignature()
+	if err != nil {return fmt.Errorf("invalid signature of cert req!")}
+
+    derCerts, certUrl, err := client.CreateOrderCert(ctx, certobj.FinalUrl, csr, true)
+    if err != nil {return fmt.Errorf("CreateOrderCert: %v\n",err)}
+
+    if certobj.Dbg {log.Printf("debug -- derCerts: %d certUrl: %s\n", len(derCerts), certUrl)}
+
+    err = SaveCertsPem(derCerts, certFilnam)
+    if err != nil {return fmt.Errorf("SaveCerts: %v\n",err)}
+
+	certobj.CertUrl = certUrl
 	return nil
 }
 
@@ -420,297 +476,6 @@ func GenCertKey()(certKey *ecdsa.PrivateKey,err error) {
 	return certKey, nil
 }
 
-
-// functions that reads CSRList from a file
-func ReadCsrFil(inFilnam string)(csrDatList *CsrList, err error) {
-
-    //todo check for yaml extension
-	idx := strings.Index(inFilnam,".yaml")
-	if idx == -1 {inFilnam += ".yaml"}
-
-    bytData, err := os.ReadFile(inFilnam)
-    if err != nil {
-        return nil, fmt.Errorf("os.ReadFile: %v\n",err)
-    }
-
-    csrList := &CsrList{}
-    err = yaml.Unmarshal(bytData, csrList)
-    if err != nil {
-        return nil, fmt.Errorf("yaml Unmarshal: %v\n", err)
-    }
-
-    return csrList, nil
-}
-
-func WriteCsrFil(outFilnam string, csrDatList *CsrList) (err error) {
-
-    csrByte, err := yaml.Marshal(csrDatList)
-	if err!= nil {
-		return fmt.Errorf("Marshal: %v\n",err)
-	}
-
-	idx := strings.Index(outFilnam, ".yaml")
-	if idx == -1 {outFilnam += ".yaml"}
-
-	outfil, err := os.Create(outFilnam)
-	if err!= nil {return fmt.Errorf("CreateFile: %v\n",err)}
-
-//	err = os.WriteFile(outFilnam, csrByte, 0666)
-	_, err = outfil.Write(csrByte)
-	if err!= nil {return fmt.Errorf("WriteFile: %v\n",err)}
-	return nil
-}
-
-/*
-
-// function that creates a new client
-func CreateLEAccount(acntNam string, prod bool) (err error) {
-
-	dbg := true
-
-	// find LE folder
-	LEDir := os.Getenv("LEDir")
-	if len(LEDir) == 0 {return fmt.Errorf("LEDir not found!")}
-
-	acntFilInfoNam := LEDir + "/" + acntNam + "_info.yaml"
-	acntData, err := os.ReadFile(acntFilInfoNam)
-	if err != nil {return fmt.Errorf("Read acntinfo: %v!", err)}
-
-//	fmt.Printf("acntData: %s\n", acntData)
-    acntInfo := AccountInfo{}
-    err = yaml.Unmarshal(acntData, &acntInfo)
-    if err != nil {return fmt.Errorf("yaml Unmarshal account file: %v\n", err)}
-
-    if dbg {
-        fmt.Printf("account info\n")
-        fmt.Printf("Name: %s\n", acntInfo.Name)
-        fmt.Printf("Contacts:\n")
-        for i :=0; i < len(acntInfo.Contacts); i++ {
-            fmt.Printf("  %d: %s\n", i+1, acntInfo.Contacts[i])
-        }
-    }
-
-	// check for existing keys and yaml file
-//	acntNam := acntInfo.Name
-	acntFilnam := ""
-	privKeyFilnam :=""
-	pubKeyFilnam := ""
-	if prod {
-		acntFilnam = LEDir + "/" + acntNam +"_prod.yaml"
-		privKeyFilnam = LEDir + "/" + acntNam + "_prodPriv.key"
-		pubKeyFilnam = LEDir + "/" + acntNam + "_prodPub.key"
-	} else {
-		acntFilnam = LEDir + "/" + acntNam +"_test.yaml"
-		privKeyFilnam = LEDir + "/" + acntNam + "_testPriv.key"
-		pubKeyFilnam = LEDir + "/" + acntNam + "_testPub.key"
-	}
-
-	if dbg {
-		fmt.Printf("acntFilnam: %s\n", acntFilnam)
-		fmt.Printf("privFilnam: %s\n", privKeyFilnam)
-		fmt.Printf("pubFilnam: %s\n", pubKeyFilnam)
-	}
-
-	// instantiate and populate LEObj
-	leAcnt := LEObj{}
-
-	if prod {
-		leAcnt.Type = "prod"
-		leAcnt.LEUrl = LEProdUrl
-	} else {
-		leAcnt.Type = "test"
-		leAcnt.LEUrl = LETestUrl
-	}
-
-	leAcnt.PrivKeyFilnam = privKeyFilnam
-	leAcnt.PubKeyFilnam = pubKeyFilnam
-	leAcnt.AcntNam = acntInfo.Name
-	leAcnt.Contacts = acntInfo.Contacts
-
-	if dbg {PrintLEAcnt(&leAcnt)}
-
-    akey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-    if err != nil { return fmt.Errorf("Generate Key: %v", err)}
-
-    if dbg {log.Printf("newClient: key generated!\n")}
-
-    client := &acme.Client{
-		Key: akey,
-		DirectoryURL: leAcnt.LEUrl,
-		}
-
-
-    if dbg {
-        log.Printf("Directory Url: %s\n", client.DirectoryURL)
-        log.Printf("success client created!\n")
-        PrintClient(client)
-    }
-
-	acntTpl:= acme.Account{
-		Contact: leAcnt.Contacts,
-	}
-
-	ctx := context.Background()
-
-    acnt, err := client.Register(ctx, &acntTpl, acme.AcceptTOS)
-    if err != nil { return fmt.Errorf("client.Register: %v", err)}
-
-	log.Printf("success CA account generated\n")
-
-    if dbg {
-		PrintClient(client)
-		PrintAccount(acnt)
-	}
-
-	privateKey := (client.Key).(*ecdsa.PrivateKey)
-
-    publicKey := &ecdsa.PublicKey{}
-
-    publicKey = &privateKey.PublicKey
-
-    x509Encoded, err := x509.MarshalECPrivateKey(privateKey)
-    if err != nil {return fmt.Errorf("x509.MarshalECPrivateKey: %v", err)}
-
-    pemEncoded := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: x509Encoded})
-
-    err = os.WriteFile(privKeyFilnam, pemEncoded, 0644)
-    if err != nil {return fmt.Errorf("pem priv key write file: %v", err)}
-
-    x509EncodedPub, err := x509.MarshalPKIXPublicKey(publicKey)
-    if err != nil {return fmt.Errorf("x509.MarshalPKIXPublicKey: %v", err)}
-
-    pemEncodedPub := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: x509EncodedPub})
-    err = os.WriteFile(pubKeyFilnam, pemEncodedPub, 0644)
-    if err != nil {return fmt.Errorf("pem pub key write file: %v", err)}
-
-	leAcnt.Updated = time.Now()
-	leAcnt.AcntId = string(client.KID)
-
-    newAcntData, err := yaml.Marshal(&leAcnt)
-    if err != nil {return fmt.Errorf("yaml Unmarshal account file: %v\n", err)}
-
-	if err = os.WriteFile(acntFilnam, newAcntData, 0600); err != nil {
-        return fmt.Errorf("Error writing key file %q: %v", acntFilnam, err)
-    }
-
-	log.Printf("wrote new LE Account file\n")
-
-    return nil
-}
-
-
-func GetLEClient(LEacntNam string, dbg bool) (cl *acme.Client, err error) {
-
-	client :=acme.Client{}
-
-	LEDir := os.Getenv("LEDir")
-	if len(LEDir) == 0 {return nil, fmt.Errorf("cannot find LEDir!")}
-
-	acntFilnam := LEDir + "/LEAccount.yaml"
-	if len(LEacntNam) > 0 {
-		acntFilnam = LEDir + acntNam + ".yaml"
-		log.Printf("info -- account file: %s\n", acntFilnam)
-	} else {
-		log.Printf("info -- no account file provided using default!")
-	}
-
-	acntData, err := os.ReadFile(acntFilnam)
-	if err != nil {return nil, fmt.Errorf("account ReadFile: %v", err)}
-
-	leAcnt := LEObj{}
-
-    err = yaml.Unmarshal(acntData, &leAcnt)
-    if err != nil {return nil, fmt.Errorf("yaml Unmarshal account file: %v\n", err)}
-	if dbg {PrintLEAcnt(&leAcnt)}
-
-	if len(leAcnt.AcntId) == 0 {
-		return nil, fmt.Errorf("no CA acount id found!\n")
-	}
-
-	if len(leAcnt.PrivKeyFilnam) == 0 {
-		return nil, fmt.Errorf("no private Key file name found!\n")
-	}
-	if len(leAcnt.PubKeyFilnam) == 0 {
-		return nil, fmt.Errorf("no public Key file name found!\n")
-	}
-
-	privFilnam := leAcnt.PrivKeyFilnam
-	pubFilnam := leAcnt.PubKeyFilnam
-
-	_, err = os.Stat(privFilnam)
-	if err != nil {
-		return nil, fmt.Errorf("no private key file: %v", err)
-	}
-
-	_, err = os.Stat(pubFilnam)
-	if err != nil {
-		return nil, fmt.Errorf("no public key file: %v", err)
-	}
-
-	client.DirectoryURL = leAcnt.LEUrl
-
-	if dbg {fmt.Printf("Acme Url [prod: %t]: %s\n", leAcnt.Type, client.DirectoryURL)}
-
-    pemEncoded, err := os.ReadFile(privFilnam)
-    if err != nil {return nil, fmt.Errorf("os.Read Priv Key: %v", err)}
-
-    pemEncodedPub, err := os.ReadFile(pubFilnam)
-    if err != nil {return nil, fmt.Errorf("os.Read Pub Key: %v", err)}
-
-    block, _ := pem.Decode([]byte(pemEncoded))
-    x509Encoded := block.Bytes
-    privateKey, err := x509.ParseECPrivateKey(x509Encoded)
-    if err != nil {return nil, fmt.Errorf("x509.ParseECPivateKey: %v", err)}
-
-    blockPub, _ := pem.Decode([]byte(pemEncodedPub))
-    x509EncodedPub := blockPub.Bytes
-    genericPublicKey, err := x509.ParsePKIXPublicKey(x509EncodedPub)
-    if err != nil {return nil, fmt.Errorf("x509.ParsePKIXKey: %v", err)}
-
-    publicKey := genericPublicKey.(*ecdsa.PublicKey)
-    privateKey.PublicKey = *publicKey
-
-	client.Key = privateKey
-    return &client, nil
-}
-
-
-// registers client with the acme server
-// GetAcmeClient performs this function
-func RegisterClient(ctx context.Context, client *acme.Client, contacts []string, dbg bool)(ac *acme.Account, err error) {
-
-	var acntTpl acme.Account
-	acntTpl.Contact = contacts
-
-    acnt, err := client.Register(ctx, &acntTpl, acme.AcceptTOS)
-    if err != nil { return nil, fmt.Errorf("client.Register: %v", err)}
-
-    if dbg {
-        log.Printf("success CA account generated\n")
-        PrintAccount(acnt)
-    }
-
-    return acnt, nil
-}
-*/
-
-// generate cert names
-func GenerateCertName(domain string)(certName string, err error) {
-
-	domByt := []byte(domain)
-	suc := false
-	for i:=len(domByt)-1; i> 0; i-- {
-		if domByt[i] == '.' {
-			domByt[i] = '_'
-			suc = true
-			break
-		}
-	}
-	if !suc {return "", fmt.Errorf("no extension with TLD found!")}
-
-	certName = string(domByt)
-	return certName, nil
-}
 
 // from https://github.com/eggsampler/acme/blob/master/examples/certbot/certbot.go#L269
 func SaveKeyPem(certKey *ecdsa.PrivateKey, keyFilNam string) (err error) {
@@ -809,6 +574,7 @@ func ParseCertsInfo(derCerts [][]byte, certInfoFilnam string)(err error){
 
 	return nil
 }
+
 
 
 // create certficate sign request
@@ -974,7 +740,7 @@ func SaveAcmeClient(client *acme.Client, filNam string) (err error) {
 }
 
 
-
+/*
 // function to retrieve keys for LetsEncrypt acme account
 func GetAcmeClient(acntFilnam string) (cl *acme.Client, err error) {
 
@@ -1023,6 +789,7 @@ func GetAcmeClient(acntFilnam string) (cl *acme.Client, err error) {
 
     return &client, nil
 }
+*/
 
 // methhod that creates LE client object and verifies LE account
 func (certobj *CertObj) GetAcmeClientV2(ctx context.Context) (err error) {
@@ -1106,7 +873,7 @@ func (certobj *CertObj) GetAuthOrder(CrList []CrObj, ctx context.Context) (newOr
 	return order, nil
 }
 
-func (certobj *CertObj) GetAuthAndToken (CrList []CrObj, order *acme.Order, ctx context.Context) (crList []CrObj, err error) {
+func (certobj *CertObj) GetAuthFromOrder (CrList []CrObj, order *acme.Order, ctx context.Context) (crList []CrObj, err error) {
 
     numAcmeDom := len(CrList)
 
@@ -1206,85 +973,6 @@ func CheckDnsProbagation(CrList []CrObj) (err error) {
 	}
 
 	return nil
-}
-
-func CleanCsrFil (csrFilnam string, csrList *CsrList) (err error) {
-
-    log.Printf("cleaning csr file\n")
-
-    numAcmeDom := len(csrList.Domains)
-
-    for i:= 0; i< numAcmeDom; i++ {
-        domain := csrList.Domains[i]
-        domain.ChalRecId = ""
-        domain.Token = ""
-        domain.TokVal = ""
-        domain.TokUrl = ""
-        domain.TokIssue = time.Time{}
-        domain.TokExp = time.Time{}
-		domain.OrderUrl = ""
-        csrList.Domains[i] = domain
-    }
-
-    csrList.LastLU = time.Now()
-	csrList.OrderUrl = ""
-    err = WriteCsrFil(csrFilnam, csrList)
-    if err != nil { return fmt.Errorf("certLib.WriteCsrFil: %v\n", err)}
-
-//    log.Printf("success writing Csr File\n")
-
-    return nil
-}
-
-func PrintCsrList(csrlist *CsrList) {
-
-    fmt.Println("***************** Csr List *****************")
-    fmt.Printf("Account: %s\n", csrlist.AcntName)
-	if csrlist.LastLU.IsZero() {
-		fmt.Printf("last mod: NA\n")
-	} else {
-		fmt.Printf("last mod: %s\n", csrlist.LastLU.Format(time.RFC1123))
-	}
-	fmt.Printf("orderUrl: %s\n", csrlist.OrderUrl)
-	fmt.Printf("certUrl:  %s\n", csrlist.CertUrl)
-    numDom := len(csrlist.Domains)
-    fmt.Printf("domains:  %d\n", numDom)
-    for i:=0; i< numDom; i++ {
-        csrdat := csrlist.Domains[i]
-		fmt.Printf("*****************************************\n")
-        fmt.Printf("domain[%d]\n", i+1)
-		fmt.Printf("===========\n")
-		fmt.Printf("    name:      %s\n", csrdat.Domain)
-        fmt.Printf("    email:     %s\n", csrdat.Email)
-		fmt.Printf("    chal rec:  %s\n", csrdat.ChalRecId)
-     	fmt.Printf("    token:     %s\n", csrdat.Token)
-		fmt.Printf("    tokval:    %s\n", csrdat.TokVal)
-		fmt.Printf("    tokUrl:    %s\n", csrdat.TokUrl)
-		fmt.Printf("    orderUrl:  %s\n", csrdat.OrderUrl)
-		fmt.Printf("    certUrl:   %s\n", csrdat.CertUrl)
-		if csrdat.TokIssue.IsZero() {
-			fmt.Printf("    tok issue:  NA\n")
-		} else {
-			fmt.Printf("    tok issue:  %s\n", csrdat.TokIssue.Format(time.RFC1123))
-		}
-		if csrdat.TokExp.IsZero() {
-			fmt.Printf("    tok exp:    NA\n")
-		} else {
-			fmt.Printf("    tok exp:    %s\n", csrdat.TokExp.Format(time.RFC1123))
-		}
-
-	    fmt.Printf("    name:\n")
-        nam:= csrdat.Name
-        fmt.Printf("      CommonName:   %s\n", nam.CommonName)
-        fmt.Printf("      Country:      %s\n", nam.Country)
-        fmt.Printf("      Province:     %s\n", nam.Province)
-        fmt.Printf("      Locality:     %s\n", nam.Locality)
-        fmt.Printf("      Organisation: %s\n", nam.Organisation)
-        fmt.Printf("      OrgUnit:      %s\n", nam.OrganisationUnit)
-    }
-
-    fmt.Println("******************* End Csr List ******************")
-
 }
 
 func PrintLEAcnt(acnt *LEObj) {
@@ -1401,7 +1089,9 @@ func PrintDir(dir acme.Directory) {
     fmt.Println("********************** End Directory *********************")
 }
 
-func PrintOrder(ord acme.Order) {
+func PrintOrder(ord *acme.Order) {
+	if ord == nil {fmt.Println("cannot print -- order pointer is nil!\n")}
+
     fmt.Println("*********************** Order ****************************")
     fmt.Printf("URI: %s\n", ord.URI)
     fmt.Printf("Status: %s\n", ord.Status)
@@ -1420,7 +1110,6 @@ func PrintOrder(ord acme.Order) {
     fmt.Printf("CertURL: %s\n", ord.CertURL)
     fmt.Printf("error: %v\n", ord.Error)
     fmt.Println("******************* End Order ****************************")
-
 }
 
 func PrintCertInfo(cert x509.Certificate, i int){
