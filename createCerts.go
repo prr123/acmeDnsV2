@@ -93,13 +93,16 @@ func main() {
 
     crFilnam := LEDir + "/csrList/" + crval.(string) + ".cr"
     acntFilnam := LEDir + "/" + acntval.(string) + ".yaml"
+	certNam := "cert_" + crval.(string)
+
 
     // list of inputs
 	// log.Printf("info -- crFilbase:  %s\n", crFilbase)
     log.Printf("info -- crFilnam:   %s\n", crFilnam)
     log.Printf("info -- acntFilnam: %s\n", acntFilnam)
-    log.Printf("info -- prod:  %t\n", prod)
-    log.Printf("info -- debug: %t\n", dbg)
+    log.Printf("info -- cert name:  %s\n", certNam)
+    log.Printf("info -- prod:       %t\n", prod)
+	log.Printf("info -- debug:      %t\n", dbg)
 
     CrList, err := certLib.ReadCrFile(crFilnam)
     if err != nil {log.Fatalf("error -- ReadCrFile: %v\n", err)}
@@ -115,20 +118,21 @@ func main() {
 	certObj, err := certLib.InitCertLib(dbg, prod)
 	if err != nil {log.Fatalf("error -- InitCertLib: %v\n", err)}
 	certObj.AcntFilnam = acntFilnam
+	certObj.CertName = certNam
 
     if dbg {certLib.PrintCertObj(certObj)}
-
 
     // creating context
     ctx := context.Background()
 
-
+	// generate acme client and retrieve let's encrypt account
     err = certObj.GetAcmeClientV2(ctx)
     if err != nil {log.Fatalf("error -- certLib.GetAcmeClient: %v\n", err)}
 
     if dbg {certLib.PrintClient(certObj.Client)}
     if dbg {certLib.PrintAccount(certObj.LEAccount)}
 
+	// check LE Account
     if certObj.LEAccount.Status == "valid" {
         log.Printf("info -- account is valid!\n")
     } else {
@@ -138,15 +142,13 @@ func main() {
     // get list of cloudflare managed zones
 	zones, err := certObj.GetCfZoneList(ctx)
     if err != nil {log.Fatalf("error -- GetZoneList: %v\n", err)}
-
     log.Printf("info -- zones: %d\n", len(zones))
 
     if dbg {certLib.PrintZones(zones)}
 
-
     // check whether all cr zones are contained in the cloudflare list
 	CrList, err = certLib.IsInZones(zones, CrList)
-	if err != nil {log.Fatalf("error -- IsInZones: %v\n", err)}
+	if err != nil {log.Fatalf("error -- found cr domains not in cloudflare domain: IsInZones: %v\n", err)}
 	log.Printf("info -- matched all zones!\n")
 	if dbg {
 		certLib.PrintCrList(CrList)
@@ -154,22 +156,25 @@ func main() {
 
     // check whether the cr zones have left-over DNS records
 	err = certObj.CheckZonesForDNSChalRecords(CrList, ctx)
-	if err != nil {log.Fatalf("error -- CheckZoneForDnsRec: %v\n", err)}
+	if err != nil {log.Fatalf("error -- found old Dns Challenge Records: CheckZoneForDnsRec: %v\n", err)}
 	log.Printf("info -- checked zones for Dns challenge records!\n")
 
-	newOrder, err := certObj.GetAuthOrder(CrList, ctx)
+	// get authorisation order from Let's Encrypt
+	order, err := certObj.GetAuthOrder(CrList, ctx)
 	if err != nil {log.Fatalf("error -- GetAuthOrder: %v\n", err)}
 
-	if dbg {certLib.PrintOrder(*newOrder)}
+	if dbg {certLib.PrintOrder(order)}
 	log.Printf("received Authorization Order!\n")
 	log.Printf("info -- success!\n")
 
-	CrList, err = certObj.GetAuthAndToken(CrList, newOrder, ctx)
+	// update CRList with authentication info from LE
+	// create Dns challenge records on cloudflare's name servers
+	CrList, err = certObj.GetAuthFromOrder(CrList, order, ctx)
 	if err != nil {log.Fatalf("error -- GetAuthAndToken: %v\n", err)}
 
 	log.Printf("info -- created all dns challenge records!")
 
-	// create a timing llop to check whether probagation was successful
+	// create a timing loop to check whether probagation was successful
 	prob := false
 	for i:=0; i< 5; i++ {
 		time.Sleep(5*time.Minute)
@@ -188,137 +193,32 @@ func main() {
 		}
 	}
 
-	if !prob {log.Fatalf("error -- could not find Dns Chal recs  after 5 wait periods!\n")}
+	if !prob {log.Fatalf("error -- could not find Dns Chal recs after 5 wait periods!\n")}
 
-	// Next Step: create Certs
-
-
-	log.Printf("info -- success createCerts\n")
-
-
-	log.Printf("info -- arrived at ProcOrd\n")
-
+	log.Printf("info -- challenge has probagated: start processing order\n")
 
 	err = certObj.SubmitChallenge(CrList, ctx)
 	if err != nil {log.Fatalf("error -- Submit Challenge: %v\n", err)}
-/*
-	// ready for sending an accept; checked dns propogation with lookup
-	for i:=0; i< numAcmeDom; i++ {
-//		dom := csrList.Domains[i]
-//        csrList.Domains[i].Token = chal.Token
-//        csrList.Domains[i].TokUrl = chal.URI
 
-		chalVal := acme.Challenge{
-			Type: "dns-01",
-			URI: dom.TokUrl,
-			Token: dom.Token,
-			Status: "pending",
-		}
-		if dbg {certLib.PrintChallenge(&chalVal, dom.Domain)}
+	ordUrl := order.URI
 
-		domain := dom.Domain
-		log.Printf("sending Accept for domain %s\n", domain)
+	acmeOrder, err := certObj.GetOrderAndWait(ordUrl, ctx)
+	if err !=nil {log.Fatalf("error -- WaitGetOrder: %v\n", err)}
+	log.Printf("info -- received order\n")
+    if certObj.Dbg {certLib.PrintOrder(acmeOrder)}
 
-		chal, err := client.Accept(ctx, &chalVal)
-		if err != nil {log.Fatalf("dns-01 chal not accepted for %s: %v", domain, err)}
-		if dbg {certLib.PrintChallenge(chal, domain)}
- 		log.Printf("chal accepted for domain %s\n", domain)
+	certObj.FinalUrl = acmeOrder.FinalizeURL
+	log.Printf("info -- FinalUrl: %s\n", certObj.FinalUrl)
 
-	}
-*/
+	err = certObj.CreateCerts(CrList[0], ctx)
+	if err != nil { log.Fatalf("error -- CreateCerts: %v\n", err)}
 
-	ordUrl := newOrder.URI
+	log.Printf("info -- success createCerts\n")
 
-	err = certObj.GetOrder(ordUrl, ctx)
-	if err !=nil {log.Fatalf("error -- GetOrder: %v\n", err)}
+    // clean zones
+    err = certObj.CleanZonesFromDNSChalRecords(CrList, ctx)
+    if err != nil {log.Fatalf("error -- CleanDns: %v\n", err)}
+    log.Printf("info -- cleaned zones from Dns challenge records!\n")
+
 }
 
-	/*
-	tmpord, err := client.GetOrder(ctx, ordUrl)
-	if err !=nil {log.Fatalf("order error: %v\n", err)}
-	if dbg {certLib.PrintOrder(*tmpord)}
-
-    log.Printf("waiting for order\n")
-	if dbg {log.Printf("order url: %s\n", ordUrl)}
-
-    ordUrl2, err := client.WaitOrder(ctx, ordUrl)
-    if err != nil {
-		if ordUrl2 != nil {certLib.PrintOrder(*ordUrl2)}
-		log.Fatalf("client.WaitOrder: %v\n",err)
-	}
-	log.Printf("received order!\n")
-	if dbg {certLib.PrintOrder(*ordUrl2)}
-
-	csrData := csrList.Domains[0]
-
-		//certLib.PrintCsr(csrData)
-	domain := csrData.Domain
-	log.Printf("generating certificate for domain: %s\n", domain)
-		// get certificates
-	certNam, err :=certLib.GenerateCertName(domain)
-	if err != nil {log.Fatalf("GenerateCertName: %v", err)}
-	if dbg {log.Printf("certNam: %s\n", certNam)}
-
-	keyFilnam := certObj.CertDir + "/" + certNam + ".key"
-	certFilnam := certObj.CertDir + "/" + certNam + ".crt"
-	log.Printf("key file: %s cert file: %s\n", keyFilnam, certFilnam)
-
-//	certKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	certKey, err := certLib.GenCertKey()
-	if err != nil {
-		log.Fatalf("GenCertKey: %v\n",err)
-	}
-	log.Printf("Cert Request: key generated!\n")
-
-	err = certLib.SaveKeyPem(certKey, keyFilnam)
-	if err != nil {log.Fatalf("certLib.SaveKeypem: %v",err)}
-	log.Printf("Save: key saved as PEM!\n")
-
-	csrTpl, err := certLib.CreateCsrTplNew(csrList, -1)
-	if err != nil {	log.Fatalf("CreateCsrTpl: %v",err)}
-
-//	csr, err := x509.CreateCertificateRequest(rand.Reader, &csrTpl, certKey)
-//	if err != nil {	log.Fatalf("CreateCertReq: %v",err)}
-
-	csr, err := certLib.CreateCsr(csrTpl, certKey)
-	if err != nil {	log.Fatalf("CreateCertReq: %v",err)}
-
-	csrParseReq, err := certLib.ParseCsr(csr)
-	if err != nil {log.Fatalf("Error parsing certificate request: %v", err)}
-
-	// need to compare csrParse and template
-	certLib.PrintCsrReq(csrParseReq)
-
-	FinalUrl := ordUrl2.FinalizeURL
-	log.Printf("FinalUrl: %s\n", FinalUrl)
-
-	derCerts, certUrl, err := client.CreateOrderCert(ctx, FinalUrl, csr, true)
-	if err != nil {log.Fatalf("CreateOrderCert: %v\n",err)}
-
-	if dbg {log.Printf("derCerts: %d certUrl: %s\n", len(derCerts), certUrl)}
-
-	csrList.CertUrl = certUrl
-	// write the pem encoded certificate chain to file
-	log.Printf("Saving certificate to: %s", certFilnam)
-
-	err = certLib.SaveCertsPem(derCerts, certFilnam)
-	if err != nil {log.Fatalf("SaveCerts: %v\n",err)}
-
-	// cleanup
-	for i:=0; i< numAcmeDom; i++ {
-		acmeZone := acmeDomList[i]
-		acmeZone.AcmeId = csrList.Domains[i].ChalRecId
-
-		err = cfApiObj.DelDnsChalRecord(acmeZone)
-    	if err != nil {log.Fatalf("DelDnsChalRecord: %v\n",err)}
-		log.Printf("deleted DNS Chal Record for zone: %s\n", acmeZone.Name)
-	}
-
-	if dbg {certLib.PrintCsrList(csrList) }
-	err = certLib.CleanCsrFil(csrFilnam, csrList)
-	if err != nil {log.Fatalf("CleanCsrFil: %v\n",err)}
-	log.Printf("success writing Csr File\n")
-
-	log.Printf("success creating Certs\n")
-}
-*/
