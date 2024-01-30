@@ -46,9 +46,7 @@ type LEObj struct {
 	PubKeyFilnam string `yaml:"PubKeyFilnam"`
 	Updated time.Time `yaml:"update"`
 	Contacts []string `yaml:"contacts"`
-//	Remove bool `yaml:"remove"`
 	Type string `yaml:"AcntType:"`
-//	TestUrl string `yaml:"TestUrl"`
 	LEUrl string `yaml:"LEUrl"`
 }
 
@@ -111,20 +109,21 @@ type CertObj struct {
 	ZoneDir string
 	CertDir string
 	CertName string
+	ZoneFilnam string
+	AcntFilnam string
 	FinalUrl string
 	CertUrl string
 	LeDir string
 	CfDir string
 	CsrDir string
 	CfToken string
-	ZoneFilnam string
-	AcntFilnam string
 	Dbg	bool
 	Prod bool
 	Client *acme.Client
 	LEAccount *acme.Account
 	api *cloudflare.API
 }
+
 
 
 // yaml version of type acme.Account
@@ -795,7 +794,7 @@ func GetAcmeClient(acntFilnam string) (cl *acme.Client, err error) {
 func (certobj *CertObj) GetAcmeClientV2(ctx context.Context) (err error) {
 
     var client acme.Client
-	dbg :=false
+	dbg := certobj.Dbg
 
 //	LEDir := os.Getenv("LEDir")
 //	if len(LEDir) == 0 {return nil, fmt.Errorf("cannot find LEDir!")}
@@ -847,6 +846,135 @@ func (certobj *CertObj) GetAcmeClientV2(ctx context.Context) (err error) {
     return nil
 }
 
+func (certobj *CertObj) CreateAcmeAccount(acntNam string, ctx context.Context) (err error) {
+
+	dbg := certobj.Dbg
+
+	if len(acntNam) == 0 {
+		return fmt.Errorf("no account name provided\n")
+	}
+	if dbg {log.Printf("info -- account name: %s\n", acntNam)}
+
+	LEDir := certobj.LeDir
+    // check for existing keys and yaml file
+    acntInfoFilnam := LEDir + "/" + acntNam + "_info.yaml"
+
+    acntData, err := os.ReadFile(acntInfoFilnam)
+    if err != nil {return fmt.Errorf("account info: %v", err)}
+
+    acntInfo := AccountInfo{}
+    err = yaml.Unmarshal(acntData, &acntInfo)
+    if err != nil {return fmt.Errorf("yaml Unmarshal account info: %v\n", err)}
+
+    if dbg {
+        fmt.Printf("account info\n")
+        fmt.Printf("Name: %s\n", acntInfo.Name)
+        fmt.Printf("Contacts:\n")
+        for i :=0; i < len(acntInfo.Contacts); i++ {
+            fmt.Printf("  %d: %s\n", i+1, acntInfo.Contacts[i])
+        }
+    }
+
+	fullAcntNam := acntNam
+	if certobj.Prod {
+		fullAcntNam += "_prod"
+	} else {
+		fullAcntNam += "_test"
+	}
+    privFilnam := LEDir + "/" + acntNam + "_priv.key"
+    pubFilnam := LEDir + "/" + acntNam + "_pub.key"
+    if dbg {
+        fmt.Printf("privFilnam: %s\n", privFilnam)
+        fmt.Printf("pubFilnam: %s\n", pubFilnam)
+    }
+
+/*
+type LEObj struct {
+	AcntNam string `yaml:"AcntName"`
+	AcntId string `yaml:"AcntId"`
+	PrivKeyFilnam string `yaml:"PrivKeyFilnam"`
+	PubKeyFilnam string `yaml:"PubKeyFilnam"`
+	Updated time.Time `yaml:"update"`
+	Contacts []string `yaml:"contacts"`
+	Type string `yaml:"AcntType:"`
+	LEUrl string `yaml:"LEUrl"`
+}
+*/
+	leAcnt := LEObj {
+		AcntNam: acntNam,
+		PrivKeyFilnam: privFilnam,
+		PubKeyFilnam: pubFilnam,
+		Contacts: acntInfo.Contacts,
+	}
+
+	if certobj.Prod {
+		leAcnt.Type = "prod"
+		leAcnt.LEUrl = LEProdUrl
+	} else {
+		leAcnt.Type = "test"
+		leAcnt.LEUrl = LETestUrl
+	}
+
+    akey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+    if err != nil { return fmt.Errorf("Generate Key: %v", err)}
+
+    if dbg {log.Printf("newClient: key generated!\n")}
+
+    client := &acme.Client{
+        Key: akey,
+        DirectoryURL: leAcnt.LEUrl,
+        }
+
+	acntTpl:= acme.Account{
+        Contact: leAcnt.Contacts,
+    }
+
+    acnt, err := client.Register(ctx, &acntTpl, acme.AcceptTOS)
+    if err != nil { return fmt.Errorf("client.Register: %v", err)}
+
+    if dbg {
+        log.Printf("Directory Url: %s\n", client.DirectoryURL)
+        log.Printf("success client and account created!\n")
+        PrintClient(client)
+        PrintAccount(acnt)
+    }
+
+	certobj.Client = client
+	certobj.LEAccount = acnt
+
+    privateKey := (client.Key).(*ecdsa.PrivateKey)
+
+    publicKey := &ecdsa.PublicKey{}
+
+    publicKey = &privateKey.PublicKey
+
+    x509Encoded, err := x509.MarshalECPrivateKey(privateKey)
+    if err != nil {return fmt.Errorf("x509.MarshalECPrivateKey: %v", err)}
+
+    pemEncoded := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: x509Encoded})
+
+    err = os.WriteFile(privFilnam, pemEncoded, 0644)
+    if err != nil {return fmt.Errorf("pem priv key write file: %v", err)}
+
+	x509EncodedPub, err := x509.MarshalPKIXPublicKey(publicKey)
+    if err != nil {return fmt.Errorf("x509.MarshalPKIXPublicKey: %v", err)}
+
+    pemEncodedPub := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: x509EncodedPub})
+    err = os.WriteFile(pubFilnam, pemEncodedPub, 0644)
+    if err != nil {return fmt.Errorf("pem pub key write file: %v", err)}
+
+    leAcnt.Updated = time.Now()
+    leAcnt.AcntId = string(client.KID)
+
+    newAcntData, err := yaml.Marshal(&leAcnt)
+    if err != nil {return fmt.Errorf("yaml Unmarshal account file: %v\n", err)}
+
+    if err = os.WriteFile(certobj.AcntFilnam, newAcntData, 0600); err != nil {
+        return fmt.Errorf("Error writing key file %q: %v", certobj.AcntFilnam, err)
+    }
+
+	return nil
+}
 
 func (certobj *CertObj) GetAuthOrder(CrList []CrObj, ctx context.Context) (newOrder *acme.Order, err error) {
 
@@ -1452,21 +1580,6 @@ func PrintCertObj(cert *CertObj) {
 	fmt.Printf("************** end certLibObj ***************\n")
 }
 
-func PrintCr( Cr CrObj) {
-
-    fmt.Printf("************** Cr file ****************\n")
-		fmt.Printf("Zone:         %s\n", Cr.Zone)
-    	fmt.Printf("Zone Id:      %s\n", Cr.ZoneId)
-    	fmt.Printf("Email:        %s\n", Cr.Email)
-    	fmt.Printf("Start:        %s\n", Cr.Start.Format(time.RFC1123))
-    	fmt.Printf("Country:      %s\n", Cr.Country)
-    	fmt.Printf("Province:     %s\n", Cr.Province)
-    	fmt.Printf("Locality:     %s\n", Cr.Locality)
-    	fmt.Printf("Organisation: %s\n", Cr.Organisation)
-    	fmt.Printf("OrganisationUnit: %s\n", Cr.OrganisationUnit)
-    fmt.Printf("*********** End Cr file ***************\n")
-}
-
 func PrintCrList(CrList []CrObj) {
 
     fmt.Printf("************** Cr List %d ****************\n", len(CrList))
@@ -1497,3 +1610,40 @@ func PrintZones(zones []cloudflare.Zone) {
         fmt.Printf("%d %-20s %s\n",i+1, zone.Name, zone.ID)
     }
 }
+
+func (c *CertObj) PrintCertObj() {
+
+	fmt.Println("*************** CertObj *****************")
+	fmt.Printf("ZoneDir: %s\n", c.ZoneDir)
+	fmt.Printf("CertDir: %s\n", c.CertDir)
+	fmt.Printf("CertName: %s\n", c.CertName)
+	fmt.Printf("ZoneFilnam: %s\n", c.ZoneFilnam)
+	fmt.Printf("AcntFilnam: %s\n", c.AcntFilnam)
+	fmt.Printf("FinalUrl: %s\n", c.FinalUrl)
+	fmt.Printf("CertUrl:  %s\n", c.CertUrl)
+	fmt.Printf("LE Dir: %s\n", c.LeDir)
+	fmt.Printf("Cf Dir: %s\n", c.CfDir)
+	fmt.Printf("Csr Dir: %s\n", c.CsrDir)
+	fmt.Printf("Dbg: %t\n", c.Dbg)
+	fmt.Printf("Prod: %t\n", c.Prod)
+	if c.Client == nil {
+		fmt.Printf("no Client!\n")
+	} else {
+		fmt.Printf("has Client!\n")
+	}
+
+	if c.api == nil {
+		fmt.Printf("no Cf api!\n")
+	} else {
+		fmt.Printf("has Cf api!\n")
+	}
+
+	if c.LEAccount == nil {
+		fmt.Printf("no LE acme account!\n")
+	} else {
+		fmt.Printf("has LE acme account!\n")
+	}
+
+	fmt.Println("************* End CertObj ***************")
+}
+
