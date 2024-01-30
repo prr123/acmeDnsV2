@@ -93,8 +93,9 @@ func main() {
 
     crFilnam := LEDir + "/csrList/" + crval.(string) + ".cr"
     acntFilnam := LEDir + "/" + acntval.(string) + ".yaml"
-	certNam := "cert_" + crval.(string)
 
+	certNam := "cert_test_" + crval.(string)
+	if prod {certNam = "cert_prod_" + crval.(string)}
 
     // list of inputs
 	// log.Printf("info -- crFilbase:  %s\n", crFilbase)
@@ -120,7 +121,7 @@ func main() {
 	certObj.AcntFilnam = acntFilnam
 	certObj.CertName = certNam
 
-    if dbg {certLib.PrintCertObj(certObj)}
+    if dbg {certObj.PrintCertObj()}
 
     // creating context
     ctx := context.Background()
