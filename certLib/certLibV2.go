@@ -410,6 +410,7 @@ func (certobj *CertObj) CreateCerts(cr CrObj, ctx context.Context)(err error) {
 
 	err = certReq.CheckSignature()
 	if err != nil {return fmt.Errorf("invalid signature of cert req!")}
+	if certobj.Dbg {log.Printf("debug -- check signature was successful!\n")}
 
     derCerts, certUrl, err := client.CreateOrderCert(ctx, certobj.FinalUrl, csr, true)
     if err != nil {return fmt.Errorf("CreateOrderCert: %v\n",err)}
@@ -1603,12 +1604,15 @@ func PrintCrList(CrList []CrObj) {
 
 func PrintZones(zones []cloudflare.Zone) {
 
-    fmt.Printf("************** Zones/Domains [%d] *************\n", len(zones))
+    fmt.Printf("************** Zones/Domains [%d] ***************\n", len(zones))
 
     for i:=0; i< len(zones); i++ {
         zone := zones[i]
         fmt.Printf("%d %-20s %s\n",i+1, zone.Name, zone.ID)
     }
+    fmt.Printf("************** End Zones/Domains *****************\n", len(zones))
+
+
 }
 
 func (c *CertObj) PrintCertObj() {
