@@ -59,6 +59,7 @@ func main() {
         log.Fatalf("error -- no /acnt flag provided!\n")
     }
 
+	prod := false
     tval, ok := flagMap["type"]
     if ok {
         if tval.(string) == "none" {log.Fatalf("error -- no type value provided for  /type flag!\n")}
@@ -68,6 +69,7 @@ func main() {
 		switch tval.(string) {
 			case "prod":
 				acntNam = acntval.(string) + "_prod.yaml"
+				prod = true
 			case "test":
 				acntNam = acntval.(string) + "_test.yaml"
 			default:
@@ -78,6 +80,11 @@ func main() {
     }
 
 	log.Printf("info -- debug: %t\n", dbg)
+	if prod {
+		log.Printf("info -- production!\n")
+	} else {
+		log.Printf("info -- testing!\n")
+	}
 	log.Printf("info -- account file: %s\n", acntNam)
 
 
@@ -89,27 +96,32 @@ func main() {
 	// creating context
 	ctx := context.Background()
 
-	client, err := certLib.GetAcmeClient(acntFilnam)
-	if err != nil {log.Fatalf("error -- certLib.GetAcmeClient: %v\n", err)}
 
-	if dbg {certLib.PrintClient(client)}
+	certObj, err := certLib.InitCertLib(dbg, prod)
+	if err != nil {log.Fatalf("error -- certLib.InitCertLib: %v\n", err)}
+	certObj.AcntFilnam = acntFilnam
+	if dbg {
+		log.Printf("debug -- CertObj after Init\n")
+		certObj.PrintCertObj()
+	}
 
-	acnt, err := client.GetReg(ctx, "")
-	if err != nil {log.Fatalf("error -- LE get Reg: %v\n", err)}
-	log.Printf("info -- retrieved LE account!\n")
+	err = certObj.GetAcmeClientV2(ctx)
+	if err != nil {log.Fatalf("error -- certLib.GetAcmeClientV2: %v\n", err)}
 
+	if dbg {
+		log.Printf("debug -- CertObj after GetAcmeClient\n")
+		certObj.PrintCertObj()
+	}
+
+	if dbg {certLib.PrintClient(certObj.Client)}
+	acnt:= certObj.LEAccount
 	if dbg {certLib.PrintAccount(acnt)}
+
 	if acnt.Status == "valid" {
 		log.Printf("info -- account is valid!\n")
 	} else {
 		log.Fatalf("error -- acount is not valid. status: %s\n", acnt.Status)
 	}
-
-//	dir, err := client.Discover(ctx)
-//	if err != nil {log.Fatalf("error -- Discover error: %v\n", err)}
-
-//	log.Printf("info -- success getting client dir\n")
-//	if dbg {certLib.PrintDir(dir)}
 
 	log.Printf("info -- success!\n")
 }
