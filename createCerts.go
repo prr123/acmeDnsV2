@@ -108,12 +108,7 @@ func main() {
     CrList, err := certLib.ReadCrFile(crFilnam)
     if err != nil {log.Fatalf("error -- ReadCrFile: %v\n", err)}
 
-	if dbg {
-		log.Printf("debug -- Domains[%d]\n", len(CrList))
-		for i:=0; i< len(CrList); i++ {
-			certLib.PrintCr(CrList[i])
-		}
-	}
+	if dbg {certLib.PrintCrList(CrList)}
 
 	// may refactor the certObj
 	certObj, err := certLib.InitCertLib(dbg, prod)
@@ -166,7 +161,6 @@ func main() {
 
 	if dbg {certLib.PrintOrder(order)}
 	log.Printf("received Authorization Order!\n")
-	log.Printf("info -- success!\n")
 
 	// update CRList with authentication info from LE
 	// create Dns challenge records on cloudflare's name servers
@@ -196,10 +190,11 @@ func main() {
 
 	if !prob {log.Fatalf("error -- could not find Dns Chal recs after 5 wait periods!\n")}
 
-	log.Printf("info -- challenge has probagated: start processing order\n")
+	log.Printf("info -- challenge has propagated: start processing order\n")
 
 	err = certObj.SubmitChallenge(CrList, ctx)
 	if err != nil {log.Fatalf("error -- Submit Challenge: %v\n", err)}
+	log.Printf("info -- Challenge accepted!\n")
 
 	ordUrl := order.URI
 
