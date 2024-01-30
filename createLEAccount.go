@@ -14,7 +14,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
-//	"context"
+	"context"
 //	"time"
 
 	certLib "acme/acmeDnsV2/certLib"
@@ -63,33 +63,33 @@ func main() {
 	if !ok { log.Fatalf("error -- type flag is required!\n")}
 	if tval.(string) == "none" {log. Fatalf("error -- type flag needs a value!\n")}
 
-	acntTyp := false
+	prod := false
 	switch tval.(string) {
-		case "prod": acntTyp = true
-		case "test": acntTyp = false
+		case "prod": 
+			prod = true
+		case "test": 
+			prod = false
 		default:
 			log.Fatalf("error -- invalid type flag value: %s!\n", tval.(string))
 	}
 
-	log.Printf("debug: %t\n", dbg)
-	log.Printf("account name: %s\n", acntNam)
-	log.Printf("account type: %t\n", acntTyp)
+	log.Printf("info -- account name: %s\n", acntNam)
+	log.Printf("info -- prod:  %t\n", prod)
+	log.Printf("info -- debug: %t\n", dbg)
 
-	err = certLib.CreateLEAccount(acntNam, acntTyp)
+	acntFilnam := acntNam + "_test.yaml"
+	if prod {acntFilnam = acntNam + "_prod.yaml"}
+
+    certObj, err := certLib.InitCertLib(dbg, prod)
+    if err != nil {log.Fatalf("error -- InitCertLib: %v\n", err)}
+    certObj.AcntFilnam = acntFilnam
+//    certObj.CertName = certNam
+
+	ctx := context.Background()
+
+	err = certObj.CreateAcmeAccount(acntNam, ctx)
 	if err != nil {log.Fatalf("CreateLEAccount: %v\n", err)}
+
+	if dbg {certObj.PrintCertObj()}
 	log.Printf("success creating account\n")
-
-	os.Exit(0)
-
-/*
-	// testing the newly created account
-	client, err := certLib.GetLEClient(acntNam, dbg)
-	if err != nil {log.Fatalf("GetLEClient: %v\n", err)}
-
-	dir, err := client.Discover(context.Background())
-	if err != nil {log.Fatalf("Discover error: %v\n", err)}
-
-	log.Printf("success retrieving client dir from LE Acnt\n")
-	if dbg {certLib.PrintDir(dir)}
-*/
 }
