@@ -423,13 +423,20 @@ func (certobj *CertObj) CreateCerts(cr CrObj, ctx context.Context)(err error) {
         SignatureAlgorithm: x509.ECDSAWithSHA256,
         DNSNames: []string{cr.Zone},
     }
+	if certobj.Dbg {
+		log.Printf("debug: csr template:\n")
+		PrintCsr(&csrTpl)
+	}
 
 	csr, err := x509.CreateCertificateRequest(rand.Reader, &csrTpl, certKey)
 	if err != nil {return fmt.Errorf("CreateCertReq: %v",err)}
-	if certobj.Dbg {PrintCsr(csr)}
 
 	certReq, err := x509.ParseCertificateRequest(csr)
 	if err != nil {return fmt.Errorf("ParseCertificateRequest: %v", err)}
+	if certobj.Dbg {
+		log.Printf("debug -- success Parse Cert Req!\n")
+		PrintCsr(certReq)
+	}
 
 	err = certReq.CheckSignature()
 	if err != nil {return fmt.Errorf("invalid signature of cert req!")}
@@ -442,7 +449,7 @@ func (certobj *CertObj) CreateCerts(cr CrObj, ctx context.Context)(err error) {
 
     err = SaveCertsPem(derCerts, certFilnam)
     if err != nil {return fmt.Errorf("SaveCerts: %v\n",err)}
-	if certobj.Dbg {log.Printf("debug -- saved Cert!")
+	if certobj.Dbg {log.Printf("debug -- saved Cert!")}
 
 	certobj.CertUrl = certUrl
 	certobj.CertFilnam = certFilnam
@@ -1059,7 +1066,7 @@ func (certobj *CertObj) GetAuthFromOrder (CrList []CrObj, order *acme.Order, ctx
         if err != nil {return CrList, fmt.Errorf("client.GetAuthorisation: %v\n",err)}
 
         if certobj.Dbg {
-			log.Printf("success getting authorization for domain: %s\n", domain)
+			log.Printf("debug -- success getting authorization for domain: %s\n", domain)
 			PrintAuth(auth)
 		}
 
@@ -1078,14 +1085,14 @@ func (certobj *CertObj) GetAuthFromOrder (CrList []CrObj, order *acme.Order, ctx
         if chal == nil {return CrList, fmt.Errorf("dns-01 challenge is not available for zone %s", domain)}
 
 		if certobj.Dbg {
-			log.Printf("success obtaining challenge\n")
+			log.Printf("debug -- success obtaining challenge\n")
 			PrintChallenge(chal, domain)
 		}
 
         // Fulfill the challenge.
         tokVal, err := client.DNS01ChallengeRecord(chal.Token)
         if err != nil {return CrList, fmt.Errorf("dns-01 token for %s: %v", domain, err)}
-        if certobj.Dbg {log.Printf("success obtaining Dns token value: %s\n", tokVal)}
+        if certobj.Dbg {log.Printf("debug -- success obtaining Dns token value: %s\n", tokVal)}
 
 		if certobj.Dbg {log.Printf("debug -- Chal token: %s\n", tokVal)}
 
