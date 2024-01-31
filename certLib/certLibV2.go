@@ -1117,7 +1117,7 @@ func CheckDnsProbagation(CrList []CrObj) (err error) {
 		_, err := net.LookupTXT(acmeDomain)
 		if err != nil {
 			errStr := err.Error()
-			log.Printf("*** errStr: %s\n", errStr)
+//			log.Printf("*** errStr: %s\n", errStr)
 			if idx := strings.Index(errStr, "127.0.0.53:53"); idx>1 {
 				return fmt.Errorf("domain %s acme dns rec not yet found!")
 			} else {
