@@ -50,6 +50,7 @@ type LEObj struct {
 	LEUrl string `yaml:"LEUrl"`
 }
 
+/*
 type CsrList struct {
     AcntName string `yaml:"account"`
 	LastLU time.Time `yaml:"last"`
@@ -72,7 +73,7 @@ type CsrDat struct {
 	CertUrl string `yaml:"certUrl"`
     Name pkixName `yaml:"Name"`
 }
-
+*/
 type CertList struct {
 	CertNam string `yaml:"certName"`
 	Domains []string `yaml:"domains"`
@@ -91,8 +92,9 @@ type pkixName struct {
 }
 
 type CrObj struct {
+	CrFilnam string `yaml:"CrFilnam"`
     Zone string `yaml:"Domain"`
-	ZoneId string
+	ZoneId string `yaml:"ZoneId"`
 	Email string `yaml:"Email"`
 	Start time.Time `yaml:"Start"`
     Country string `yaml:"Country"`
@@ -100,6 +102,10 @@ type CrObj struct {
     Locality string `yaml:"Locality"`
     Organisation string `yaml:"Organisation"`
     OrganisationUnit string `yaml:"OrganisationUnit"`
+	CertName string `yaml:"CertName"`
+	CertUrl string `yaml:"CertUrl"`
+	CertFilnam string `yaml:"CertFilnam"`
+	CertExp time.Time `yaml:"CertExpirary"`
 	token string
 	tokURI string
 }
@@ -109,6 +115,7 @@ type CertObj struct {
 	ZoneDir string
 	CertDir string
 	CertName string
+	CertFilnam string
 	ZoneFilnam string
 	AcntFilnam string
 	FinalUrl string
@@ -243,6 +250,22 @@ func ReadCrFile(filnam string)(Cr []CrObj, err error) {
 	return Cr, nil
 }
 
+
+func (certobj *CertObj) WriteCrFinalFile(Cr []CrObj)(err error) {
+
+	Cr[0].CertUrl = certobj.CertUrl
+	Cr[0].CertName = certobj.CertName
+//	Cr[0].CertExp = time
+	filnam := certobj.CsrDir + "/" + certobj.CertName + ".crf"
+
+	fdat, err := yaml.Marshal(&Cr)
+	if err != nil {return fmt.Errorf("marshal: %v\n", err)}
+
+	err = os.WriteFile(filnam, fdat, 0600)
+	if err != nil {return fmt.Errorf("write file: %v\n", err)}
+
+	return nil
+}
 
 func IsInZones(zones []cloudflare.Zone, CrList []CrObj) (NCrList[]CrObj, err error) {
 
@@ -421,6 +444,8 @@ func (certobj *CertObj) CreateCerts(cr CrObj, ctx context.Context)(err error) {
     if err != nil {return fmt.Errorf("SaveCerts: %v\n",err)}
 
 	certobj.CertUrl = certUrl
+	certobj.CertFilnam = certFilnam
+
 	return nil
 }
 
@@ -576,7 +601,7 @@ func ParseCertsInfo(derCerts [][]byte, certInfoFilnam string)(err error){
 }
 
 
-
+/*
 // create certficate sign request
 func CreateCsrTpl(csrData CsrDat) (template x509.CertificateRequest) {
 
@@ -647,6 +672,8 @@ fmt.Printf("dbg -- nam[%d;%d]:\n%s\n", domIdx,namIdx, nam.CommonName)
 	template.DNSNames = dnsNam
 	return template, nil
 }
+*/
+
 
 func CreateCsr(csrTpl x509.CertificateRequest, certKey *ecdsa.PrivateKey)(csr []byte,err error) {
 
