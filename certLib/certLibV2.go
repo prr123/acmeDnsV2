@@ -193,7 +193,6 @@ type JsAcnt struct {
 
 
 func InitCertLib(dbg, prod bool)(certobj *CertObj, err error) {
-
 	certObj := CertObj{}
 	certObj.Dbg = dbg
 	certObj.Prod = prod
@@ -427,21 +426,23 @@ func (certobj *CertObj) CreateCerts(cr CrObj, ctx context.Context)(err error) {
 
 	csr, err := x509.CreateCertificateRequest(rand.Reader, &csrTpl, certKey)
 	if err != nil {return fmt.Errorf("CreateCertReq: %v",err)}
+	if certobj.Dbg {PrintCsr(csr)}
 
 	certReq, err := x509.ParseCertificateRequest(csr)
 	if err != nil {return fmt.Errorf("ParseCertificateRequest: %v", err)}
 
 	err = certReq.CheckSignature()
 	if err != nil {return fmt.Errorf("invalid signature of cert req!")}
-	if certobj.Dbg {log.Printf("debug -- check signature was successful!\n")}
+	if certobj.Dbg {log.Printf("debug -- signature check was successful!\n")}
 
     derCerts, certUrl, err := client.CreateOrderCert(ctx, certobj.FinalUrl, csr, true)
     if err != nil {return fmt.Errorf("CreateOrderCert: %v\n",err)}
 
-    if certobj.Dbg {log.Printf("debug -- derCerts: %d certUrl: %s\n", len(derCerts), certUrl)}
+	if certobj.Dbg {log.Printf("debug -- success obtained derCerts: %d certUrl: %s\n", len(derCerts), certUrl)}
 
     err = SaveCertsPem(derCerts, certFilnam)
     if err != nil {return fmt.Errorf("SaveCerts: %v\n",err)}
+	if certobj.Dbg {log.Printf("debug -- saved Cert!")
 
 	certobj.CertUrl = certUrl
 	certobj.CertFilnam = certFilnam
@@ -1541,7 +1542,7 @@ func PrintPkixNam(subj pkix.Name) {
     }
 }
 
-func PrintCsrReq(req *x509.CertificateRequest) {
+func PrintCsr(req *x509.CertificateRequest) {
 
 	fmt.Println("******************* CSR ********************")
 	fmt.Printf("DNS Names %d\n", len(req.DNSNames))
