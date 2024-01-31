@@ -11,6 +11,7 @@ import (
 	"log"
 	"fmt"
 	"os"
+	"strings"
 //	"time"
 
 	certLib "acme/acmeDnsV2/certLib"
@@ -24,67 +25,68 @@ func main() {
 
     flags:=[]string{"dbg","cert"}
 
-	// default file
-	dbg := false
-    certFilnam := ""
-
 	useStr := "readPemCerts /cert=certfile [/dbg]"
-	helpStr := "program that reads a Pem Cert File\n"
+	helpStr := "program that reads a Pem Cert File"
 
-	if numarg > 3 {
+	if numarg > len(flags) +1 {
 		fmt.Println("too many arguments in cl!")
 		fmt.Println("usage: %s\n", useStr)
 		os.Exit(-1)
 	}
 
 	if numarg> 1 && os.Args[1] == "help" {
-		fmt.Printf("help:\n%s\n", helpStr)
-		fmt.Printf("usage is: %s\n", useStr)
-		os.Exit(1)
+		fmt.Printf("help: %s\n", helpStr)
+		fmt.Printf("usage: %s\n", useStr)
+		os.Exit(0)
 	}
 
 
 	flagMap, err := util.ParseFlags(os.Args, flags)
 	if err != nil {log.Fatalf("util.ParseFlags: %v\n", err)}
 
+	dbg := false
 	_, ok := flagMap["dbg"]
 	if ok {dbg = true}
-	if dbg {
-		for k, v :=range flagMap {
-			fmt.Printf("k: %s v: %s\n", k, v)
-		}
-	}
 
 	certNamVal, ok := flagMap["cert"]
 	if ok {
-		if certNamVal.(string) == "none" {log.Fatalf("no string provided with /name flag!")}
-			certFilnam = certNamVal.(string)
-			log.Printf("cert Name: %s\n", certFilnam)
+		if certNamVal.(string) == "none" {log.Fatalf("error -- no string provided with /name flag!")}
 	} else {
-		fmt.Printf("help:\n%s\n", helpStr)
-		fmt.Printf("usage is: %s\n", useStr)
-		log.Fatalf("need cert flag and value\n")
+		log.Fatalf("error -- need cert flag and value\n")
+	}
+	certName := certNamVal.(string)
+	log.Printf("cert Name: %s\n", certName)
+
+	prod := false
+	if idx:=strings.Index(certName,"_prod"); idx > -1 {
+		prod = true
+	} else {
+		if idx:=strings.Index(certName,"_test"); idx > -1 {
+			prod = false
+		} else {
+			log.Fatalf("error -- cert name does not contain prod or test!\n")
+		}
 	}
 
-	certObj, err := certLib.InitCertLib()
-	if err != nil {log.Fatalf("InitCertLib: %v\n", err)}
+	certFilnam := certName
+
+	certObj, err := certLib.InitCertLib(dbg, prod)
+	if err != nil {log.Fatalf("error -- InitCertLib: %v\n", err)}
     if dbg {certLib.PrintCertObj(certObj)}
 
 	certDir := certObj.CertDir
-	if dbg {log.Printf("certDir: %s\n", certDir)}
+	if dbg {log.Printf("debug -- certDir: %s\n", certDir)}
 
 	certFilnam = certDir + "/" + certFilnam
-	log.Printf("full cert file name: %s\n", certFilnam)
+	log.Printf("info -- cert file name: %s\n", certFilnam)
 
 	_, err = os.Stat(certFilnam)
-	if err != nil {log.Fatalf("cert file with name: %s does not exist: %v\n", certFilnam, err)}
+	if err != nil {log.Fatalf("error -- cert file with name: %s does not exist: %v\n", certFilnam, err)}
 
-	log.Printf("success reading Certs\n")
+	log.Printf("info -- success locating cert file\n")
 
 	err = certLib.ReadPemCerts(certFilnam, true)
-	if err != nil {log.Fatalf("ReadPemCerts: %v\n", err)}
+	if err != nil {log.Fatalf("error -- ReadPemCerts: %v\n", err)}
 
-
-	log.Printf("success parsing Certs\n")
-
+	log.Printf("info -- success parsing Certs\n")
 }
