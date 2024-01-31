@@ -1101,7 +1101,7 @@ func (certobj *CertObj) GetAuthFromOrder (CrList []CrObj, order *acme.Order, ctx
 		dnsRec, err := api.CreateDNSRecord(ctx, &rc, param)
 		if err != nil {return CrList, fmt.Errorf("CreateDnsREc: %v", err)}
 
-		if certObj.Dbg {log.Printf("debug -- DnsRec: %v\n", dnsRec)}
+		if certobj.Dbg {log.Printf("debug -- DnsRec: %v\n", dnsRec)}
 	}
 	return CrList, nil
 }
