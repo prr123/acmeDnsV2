@@ -1023,8 +1023,6 @@ func (certobj *CertObj) GetAuthOrder(CrList []CrObj, ctx context.Context) (newOr
 	client := certobj.Client
     order, err := client.AuthorizeOrder(ctx, authIdList)
     if err != nil {return nil, fmt.Errorf("client.AuthorizeOrder: %v\n",err)}
-//    log.Printf("received Authorization Order!\n")
-//    if dbg {PrintOrder(*newOrder)}
 
 	return order, nil
 }
@@ -1088,7 +1086,7 @@ func (certobj *CertObj) GetAuthFromOrder (CrList []CrObj, order *acme.Order, ctx
         if err != nil {return CrList, fmt.Errorf("dns-01 token for %s: %v", domain, err)}
         if certobj.Dbg {log.Printf("success obtaining Dns token value: %s\n", tokVal)}
 
-		log.Printf("Chal token: %s\n", tokVal)
+		if certobj.Dbg {log.Printf("debug -- Chal token: %s\n", tokVal)}
 
 		// check that there is no Dns Challenge rexcord
 		// if so, delete the record
@@ -1103,7 +1101,7 @@ func (certobj *CertObj) GetAuthFromOrder (CrList []CrObj, order *acme.Order, ctx
 		dnsRec, err := api.CreateDNSRecord(ctx, &rc, param)
 		if err != nil {return CrList, fmt.Errorf("CreateDnsREc: %v", err)}
 
-		log.Printf("DnsRec: %v\n", dnsRec)
+		if certObj.Dbg {log.Printf("debug -- DnsRec: %v\n", dnsRec)}
 	}
 	return CrList, nil
 }
