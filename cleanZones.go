@@ -106,9 +106,7 @@ func main() {
 
 	if dbg {
 		log.Printf("debug -- Domains[%d]\n", len(CrList))
-		for i:=0; i< len(CrList); i++ {
-			certLib.PrintCr(CrList[i])
-		}
+		certLib.PrintCrList(CrList)
 	}
 
 	// may refactor the certObj
